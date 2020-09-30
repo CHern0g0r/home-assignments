@@ -260,5 +260,6 @@ def create_cli(build):
                     break
                 if key == 'r':
                     frame = 0
+        cv2.destroyAllWindows()
 
     return cli
