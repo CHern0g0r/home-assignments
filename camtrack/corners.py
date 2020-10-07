@@ -40,14 +40,20 @@ class Tracker:
     def __init__(self, frame_0, treshold=200):
         self.frame_0 = frame_0
         self.treshold = treshold
-        self.corners, self.corner_sizes = self.find_corners(frame_0)
+        self.corners, self.corner_sizes = self.find_corners(
+            frame_0,
+            quality=0.001
+        )
         self.ids = np.arange(self.corners.shape[0])
         self.track_length = np.ones((self.corners.shape[0]), dtype='int')
         self.max_length = 0
 
     def find_flow(self, frame_1):
-        tracked, mask, mask1 = self.use_optflow(self.frame_0, frame_1,
-                                                self.corners)
+        tracked, mask, mask1 = self.use_optflow(
+            self.frame_0,
+            frame_1,
+            self.corners
+        )
         new_corners, new_sizes = self.find_corners(
             frame_1, mask=self.get_corner_cover()
         )
@@ -108,14 +114,15 @@ class Tracker:
         corners = corners[:, 0, :]
         return corners
 
-    def find_corners(self, frame, steps=5, mask=None):
+    def find_corners(self, frame, steps=5, mask=None, quality=0.01):
         layer = frame.copy()
         k = 1
         corners = np.empty((0, 2), dtype=float)
         sizes = np.empty((0, ), dtype=float)
 
         for _ in range(steps):
-            layer_corners = self.find_layer_corners(layer, mask=mask)
+            layer_corners = self.find_layer_corners(layer, mask=mask,
+                                                    quality=quality)
             corners = np.concatenate((corners, layer_corners * k), axis=0)
             sizes = np.concatenate(
                 (sizes, np.array([k*3] * layer_corners.shape[0])),
@@ -147,7 +154,7 @@ class Tracker:
                       10, 0.03)
         )
 
-        _, mask1, _ = cv2.calcOpticalFlowPyrLK(
+        new_points1, mask1, _ = cv2.calcOpticalFlowPyrLK(
             (frame_1*255).astype(np.uint8),
             (frame_0*255).astype(np.uint8),
             new_points.astype('float32').reshape((-1, 1, 2)),
@@ -157,6 +164,10 @@ class Tracker:
             criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
                       10, 0.03)
         )
+
+        deltas = points.reshape((-1, 1, 2)) - new_points1
+        deltas = np.linalg.norm(deltas, axis=2)
+        mask = (mask == 1) & (deltas < np.quantile(deltas, 0.99, 0))
 
         return new_points, mask, mask1
 
