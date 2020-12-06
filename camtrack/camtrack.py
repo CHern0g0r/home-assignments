@@ -25,7 +25,11 @@ from _camtrack import (
     rodrigues_and_translation_to_view_mat3x4,
     TriangulationParameters,
     Correspondences,
-    compute_reprojection_errors
+    compute_reprojection_errors,
+    view_mat3x4_to_pose,
+    eye3x4,
+    _remove_correspondences_with_ids,
+    Pose
 )
 
 
@@ -49,6 +53,11 @@ class CamTracker:
         self.corners_to_frames = defaultdict(list)
         self.retriangulated = {}
 
+        if v1 is None or v2 is None:
+            print('Initialize tracking')
+            v1, v2 = self.find_start_poses()
+            print('Initial frames: [{}, {}]'.format(v1[0], v2[0]))
+
         self.add_to_view_mats(v1[0], pose_to_view_mat3x4(v1[1]), -1)
         self.add_to_view_mats(v2[0], pose_to_view_mat3x4(v2[1]), -1)
 
@@ -70,6 +79,72 @@ class CamTracker:
         for p, i, l in zip(p3d, ids, 2 * np.ones(ids.shape)):
             self.add_to_cloud(p, i, l)
         print('Cloud initialised with {} points'.format(len(self.cloud)))
+
+    def find_start_poses(self):
+        best_frames = (0, 0)
+        best_points = 0
+        best_second_pose = None
+        indent = 5 if self.length > 30 else 1
+        for i in range(self.length):
+            print('Check frame {}'.format(i))
+            for j in range(i + indent, self.length):
+                pose, points = self.find_poses_by_2_frames(i, j)
+                if points > best_points:
+                    best_frames = (i, j)
+                    best_second_pose = pose
+                    best_points = points
+        return ((best_frames[0],  view_mat3x4_to_pose(eye3x4())),
+                (best_frames[1], best_second_pose))
+
+    def find_poses_by_2_frames(self, frame1, frame2):
+        corr = build_correspondences(
+            self.corner_storage[frame1],
+            self.corner_storage[frame2]
+        )
+
+        H, mask_h = cv2.findHomography(
+            corr[1],
+            corr[2],
+            method=cv2.RANSAC
+        )
+
+        E, mask_e = cv2.findEssentialMat(
+            corr[1],
+            corr[2],
+            self.intr_mat,
+            method=cv2.RANSAC,
+            threshold=1.
+        )
+
+        best_pose = None
+        best_points = 0
+
+        if np.sum(mask_h.flatten()) / np.sum(mask_e.flatten()) <= 0.5:
+            corr = _remove_correspondences_with_ids(
+                corr, np.argwhere(mask_e == 0)
+            )
+            R1, R2, t = cv2.decomposeEssentialMat(E)
+
+            poses = [
+                Pose(R1.T, R1.T @ t),
+                Pose(R2.T, R2.T @ t),
+                Pose(R1.T, R1.T @ (-t)),
+                Pose(R2.T, R2.T @ (-t))
+            ]
+
+            for pose in poses:
+                points, ids, median_cos = triangulate_correspondences(
+                    corr,
+                    eye3x4(),
+                    pose_to_view_mat3x4(pose),
+                    self.intr_mat,
+                    self.triang_params
+                )
+                if len(points) > best_points:
+                    best_pose = pose
+                    best_points = len(points)
+
+        return best_pose, best_points
 
     def add_to_cloud(self, point, ind, isin):
         if ind not in self.cloud or self.cloud[ind]['inl'] < isin:
@@ -281,8 +356,8 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                           known_view_1: Optional[Tuple[int, Pose]] = None,
                           known_view_2: Optional[Tuple[int, Pose]] = None) \
         -> Tuple[List[Pose], PointCloud]:
-    if known_view_1 is None or known_view_2 is None:
-        raise NotImplementedError()
+    # if known_view_1 is None or known_view_2 is None:
+    #     raise NotImplementedError()
 
     max_repr_err = 1.6
 
